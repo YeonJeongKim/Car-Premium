@@ -1,0 +1,182 @@
+---
+title: "자동차 보험료 계산"
+author: "yeonjeong"
+output: html_document
+---
+#### 사고건수와 사고심도에 대한 모델링을 통해 자동차 보험료를 예측할 수 있다.
+* 자동차 사고건수 ~ Poisson glm, NB glm, zip 등
+* 자동차 사고심도 ~ Gamma glm
+
+#### 자동차 보험자료의 각 변수들(factor)
+* Kilometers: 자동차 년간 주행거리 1~5
+* Zone: 1~7
+* Bonus: 1~7
+* Make: 1~9
+* Insured: 보험가입자수
+* Claims: 총 사고건수
+* Payment: 총보험금 지불액
+
+```{r}
+library(ggplot2); library(dplyr)
+library(pscl) # zip modelling을 위함
+
+car<-read.table("C:\\Users\\SAMSUNG\\Desktop\\Car.csv", sep=",", header=T)
+head(car)
+colnames(car)<-c("K","Z","B","M","m","n","y") # m; 가입자수 n; claim, y:payment
+```
+
+### 1) 자동차 사고건수N~pois(lamda*m)  이때 lamda=n/m 에 대한 GLM
+```{r}
+car2<-car[car$m!=0,] # 보험가입자 수 가 0인 데이터 삭제
+
+# 교호작용 없는 모델 
+lm1<-glm(n~factor(K)+factor(Z)+factor(B)+factor(M), family=poisson(link=log), data=car2, offset=log(m)) # log(n/m) 에대한 modeling
+summary(lm1)$aic
+
+# 교호작용 있는 모델
+#lm2<-glm(n ~ factor(K) + factor(Z) + factor(B) + factor(M) +  factor(K):factor(Z) + factor(K):factor(B) + factor(Z):factor(B) +factor(K):factor(M) + factor(Z):factor(M) + factor(B):factor(M) + factor(K):factor(Z):factor(B) + factor(K):factor(Z):factor(M) + factor(B):factor(Z):factor(M), family=poisson(link=log), data=car2, offset=log(m)) # log(n/m) 에대한 modeling
+#step(lm2)
+
+#최종모델
+pois_final <- glm(formula = n ~ factor(K) + factor(Z) + factor(B) + factor(M) + 
+                    factor(K):factor(Z) + factor(K):factor(B) + factor(Z):factor(B) + 
+                    factor(K):factor(M) + factor(Z):factor(M) + factor(B):factor(M), family = poisson(link = log), data = car2, offset = log(m))
+
+summary(pois_final)$aic
+```
+
+
+### ZIP(Zero Inflated Poisson)
+#### 0이많은 포아송 모델에 대한 분석
+```{r}
+ggplot(car, aes(n))+geom_histogram() + scale_x_log10()
+zip1<-zeroinfl(n~factor(K)+factor(Z)+factor(B)+factor(M), data=car2, offset=log(m))
+summary(zip1)
+-5284*(-2)+2*25 #zip1의 aic
+```
+
+### 2) 자동차사고건수N~binom(m, p) 
+```{r}
+car2[car2$n/car2$m>1,] #n/m 값이 1보다 크므로 빼고 하자 
+car3<-car2[car2$n/car2$m<1,]
+
+# 교호작용 없는모델
+binom1<-glm(cbind(n, m-n)~factor(K)+factor(Z)+factor(B)+factor(M), data=car3, family=binomial(link=logit))
+summary(binom1)
+
+# 교호작용 있는 모델
+#binom2<-glm(cbind(n, m-n)~factor(K)*factor(B)*factor(M)*factor(Z), data=car3, family=binomial(link=logit))
+#step(binom2)
+
+# 최종모델
+binom_final<-glm(cbind(n, m - n) ~ factor(K) + factor(B) + factor(M) + 
+                   factor(Z) + factor(K):factor(B) + factor(K):factor(M) + factor(B):factor(M) + 
+                   factor(K):factor(Z) + factor(B):factor(Z) + factor(M):factor(Z), 
+                 family = binomial(link = logit), data = car[car$n/car$m<1,])
+summary(binom_final)$aic
+```
+
+
+### 위 두 모형들에 대한 Pearson 표준화 잔차 및 Deviance 잔차
+```{r}
+car2<-car2 %>% mutate(pois_pearson = residuals(pois_final, type="pearson"))
+car2<-car2 %>% mutate(pois_dev = residuals(pois_final, type="deviance"))
+car2<-car2 %>% mutate(F=qnorm(rank(pois_pearson )/(length(pois_pearson )+1)))
+car2<-car2 %>% mutate(F2=qnorm(rank(pois_dev )/(length(pois_dev )+1)))
+
+
+car3<-car3 %>% mutate(binom_pearson = residuals(binom_final, type="pearson"))
+car3<-car3 %>% mutate(binom_dev = residuals(binom_final, type="deviance"))
+car3<-car3 %>% mutate(F=qnorm(rank(binom_pearson )/(length(binom_pearson )+1)))
+car3<-car3 %>% mutate(F2=qnorm(rank(binom_dev )/(length(binom_dev )+1)))
+
+
+# 잔차들의 여러 plot - Poisson
+library(grid); library(gridExtra); library(ggpmisc)
+
+q1<-ggplot(car2, aes(x=1, y=pois_pearson)) + geom_boxplot() + labs(x=" ",y="Pois Pearson res") + ggtitle("Pearson residual ")
+q2<-ggplot(car2, aes(x=1, y=pois_dev)) + geom_boxplot()  + labs(x=" ",y="Pois Dev res") + ggtitle("Dev residual ")
+grid.arrange(q1,q2, ncol=2,
+             top = textGrob("Pois Boxplot",gp=gpar(fontsize=20,font=3)))
+
+q3<-ggplot(car2, aes(pois_pearson)) + geom_histogram() + ggtitle("Pearson residual ")
+q4<-ggplot(car2, aes(pois_dev)) + geom_histogram() + ggtitle("Dev residual ")
+grid.arrange(q3,q4, ncol=2,
+             top = textGrob("Pois Histogram",gp=gpar(fontsize=20,font=3)))
+
+q5<- ggplot(car2, aes(F,pois_pearson)) + geom_point() + geom_smooth(method="lm", se=F) + ggtitle("Pearson residual")+ 
+  stat_poly_eq(formula = y ~ x, aes(label = paste(..rr.label.., sep = "~~~")), parse = TRUE)
+q6<- ggplot(car2, aes(x=F2, y=pois_dev)) + geom_point() + geom_smooth(method="lm", se=F) + ggtitle("Dev residual") + 
+  stat_poly_eq(formula = y ~ x, aes(label = paste(..rr.label.., sep = "~~~")), parse = TRUE)
+grid.arrange(q5,q6, ncol=2,
+             top = textGrob("Pois Q-Q plot",gp=gpar(fontsize=20,font=3)))
+
+# 잔차들의 여러 plot - Binom
+p1<-ggplot(car3, aes(x=1, y=binom_pearson)) + geom_boxplot() + labs(x=" ",y="Binom Pearson res") + ggtitle("Pearson residual ")
+p2<-ggplot(car3, aes(x=1, y=binom_dev)) + geom_boxplot()  + labs(x=" ",y="Binom Dev res") + ggtitle("Dev residual ")
+grid.arrange(p1,p2, ncol=2,
+             top = textGrob("Binom Boxplot",gp=gpar(fontsize=20,font=3)))
+
+p3<-ggplot(car3, aes(binom_pearson)) + geom_histogram() + ggtitle("Pearson residual ")
+p4<-ggplot(car3, aes(binom_dev)) + geom_histogram() + ggtitle("Dev residual ")
+grid.arrange(p3,p4, ncol=2,
+             top = textGrob("Binom Histogram",gp=gpar(fontsize=20,font=3)))
+
+p5<- ggplot(car3, aes(F,binom_pearson)) + geom_point() + geom_smooth(method="lm", se=F) + ggtitle("Pearson residual") + 
+  stat_poly_eq(formula = y ~ x, aes(label = paste(..rr.label.., sep = "~~~")), parse = TRUE)
+p6<- ggplot(car3, aes(F2, binom_dev)) + geom_point() + geom_smooth(method="lm", se=F) + ggtitle("Dev residual") + 
+  stat_poly_eq(formula = y ~ x, aes(label = paste(..rr.label.., sep = "~~~")), parse = TRUE)
+grid.arrange(p5,p6, ncol=2,
+             top = textGrob("Binom Q-Q plot",gp=gpar(fontsize=20,font=3)))
+```
+#### 두 모델에 대한 비교
+* n이 크고 p가 작으면 binomial이 poisson에 수렴한다.
+* 그러나 n에 비해 p가 크면 fitting이 불안정해 진다.
+* 단순추정값(n/m)은 설명변수의 조합을 고려하지 않은 전반적인 사고빈도 
+* 단순추정값과 다르게 glm모델링은 가입자가 없는 지역에 대하여도 예측이 가능하다.
+
+### 3) 자동차 사고건수N~NB (overdispersion 문제를 해결)
+```{r}
+library(MASS)
+
+X2<-sum(residuals(pois_final, type="pearson")^2)
+X2/(dim(car2)[1]-dim(summary(pois_final)$coefficients)) # 일정 증가가 아니라 1.12배 정도 뻥튀기 되며 증가한다.
+
+quasi1<-glm(formula = n ~ factor(K) + factor(Z) + factor(B) + factor(M) + 
+              factor(K):factor(Z) + factor(K):factor(B) + factor(Z):factor(B) + 
+              factor(K):factor(M) + factor(Z):factor(M) + factor(B):factor(M), family = quasipoisson, data = car2, offset = log(m))
+summary(quasi1)
+```
+* quassi poisson 결과 1.12 의 overdispersion 값을 가짐을 알 수 있다.
+* 이를 해결하기 위해 NB 모델을 적용해보았다.
+* 그러나 모형이 복잡함에 비해 aic값에 큰 개선이 없어 pois모델을 택하기하였다. 
+```{r}
+nb_final<- glm.nb(formula = n ~ factor(K) + factor(Z) + factor(B) + factor(M) + 
+                    factor(K):factor(Z) + factor(K):factor(B) + factor(Z):factor(B) + 
+                    factor(K):factor(M) + factor(Z):factor(M) + factor(B):factor(M) + 
+                    offset(log(m)), data = car[car$n/car$m < 1, ], init.theta = 5432.412386, 
+                  link = log)
+summary(nb_final)$aic
+```
+
+### 4) 자동차사고심도에 대한 모델링
+### 사고심도 y ~ Gamma
+```{r}
+car2<-car[car$y!=0,]
+# 각 수준조합별로 반복수가 n인 그룹화 자료이므로 weight=n을 해야한다.
+glm4<-glm(y/n~(factor(K)+factor(Z)+factor(B)+factor(M))^2, data=car2, family=Gamma(link="log"), weight=n)
+#step(glm4) 결과 2차교호작용이 있는 모델이 최적 모델
+gam_final<-glm(y/n ~ factor(K) + factor(Z) + factor(B) + factor(M) + 
+                 factor(K):factor(Z) + factor(K):factor(B) + factor(K):factor(M) + 
+                 factor(Z):factor(B) + factor(B):factor(M), family = Gamma(link = "log"), 
+               data = car2, weights = n)
+summary(gam_final)$aic
+````
+
+### 5) 자동차 보험료 계산
+* 자동차 보험료 = 1인당 년간 평균 사고빈도 * 1건당 평균 사고심도
+```{r}
+# size <- predict.glm(pois_final, car, type = 'response')
+# number <- predict.glm(gam_final, car, type = 'response')
+# 보험료 = (number/m)*size
+````
